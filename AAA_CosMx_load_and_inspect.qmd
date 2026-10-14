@@ -1,0 +1,801 @@
+---
+title: "AAA CosMx: loading and inspecting the AtoMx export"
+subtitle: "Whole slide → validation → background → spatial data → sections → per-section objects"
+author: "DRP-HCB Intern Maryamu Habila"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    code-tools: true
+    df-print: paged
+    embed-resources: true
+    theme: cosmo
+execute:
+  warning: false
+  message: true
+editor: visual
+---
+
+::: {.callout-note appearance="simple"}
+**How to use this page.** Run the chunks in order (RStudio: the green ▶ on each chunk, or Cmd+Shift+Enter). Each inspection line has its own chunk, so you see its result before moving on.
+
+**Rule used throughout:** one column → `obj$column` · several columns → `obj[[c("col1", "col2")]]` · all metadata → `obj[[]]` · a count matrix → `LayerData(obj, assay = , layer = "counts")`. New per-cell values are written straight into `obj`: `obj$new_column <- ...`
+:::
+
+# Setup
+
+## **Load packages**
+
+**Does:** loads the toolkits used below.
+
+```{r}
+#| label: packages
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(SeuratObject)
+  library(Matrix)
+  library(data.table)
+  library(dbscan)
+  library(ggplot2)
+  library(R.utils)
+})
+```
+
+## **File locations and output folders**
+
+**Reads in:** the paths to the AtoMx Seurat export and the AtoMx flat files. **Does:** creates the output folders. **Returns:** `output_dir`, `dir_plots`, `dir_sections`.
+
+```{r}
+#| label: paths
+seurat_file <- "/Users/maryamuhabilausman/Desktop/AAA_CosMx_Analysis/Downloaded_data/seuratObject_AC20260629_AAA3.RDS"  
+slide_dir   <- "/Users/maryamuhabilausman/Desktop/AAA_CosMx_Analysis/Downloaded_data/flatFiles/AC20260629_AAA3"      
+output_dir  <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"                                                
+
+dir_plots    <- file.path(output_dir, "spatial_plots")   
+dir_sections <- file.path(output_dir, "per_section")    
+dir.create(dir_plots,    recursive = TRUE, showWarnings = FALSE)  
+dir.create(dir_sections, recursive = TRUE, showWarnings = FALSE)
+```
+
+# Read in the Seurat object
+
+## **Load**
+
+**Reads in:** `seuratObject_AC20260629_AAA3.RDS`, the AtoMx export (genes, control probes, metadata, spatial data). **Does:** checks the file exists and is a Seurat object. **Returns:** `obj`.
+
+```{r}
+#| label: load
+stopifnot(file.exists(seurat_file))   
+obj <- readRDS(seurat_file)           
+stopifnot(inherits(obj, "Seurat"))    
+```
+
+## **The object as a whole**
+
+Run one line at a time.
+
+The whole object: 6526 features (6183 genes + 343 control probes), 123,709 cells, 3 assays, 1 FOV object.
+
+```{r}
+obj
+```
+
+Genes × cells of the default assay (6183 × 123,709).
+
+```{r}
+dim(obj)
+```
+
+`RNA` (genes), `negprobes` and `falsecode` (background controls).
+
+```{r}
+Assays(obj)
+```
+
+`RNA` is used whenever no assay is named.
+
+```{r}
+DefaultAssay(obj)
+```
+
+`counts` (raw) and `data`; this workflow uses counts only.
+
+```{r}
+Layers(obj[["RNA"]])
+```
+
+The spatial object holding centroids, polygons and transcripts.
+
+```{r}
+Images(obj)
+```
+
+Cell names (= `colnames(obj)`).
+
+```{r}
+head(Cells(obj))
+```
+
+Gene names (= `rownames(obj)`).
+
+```{r}
+head(Features(obj))
+```
+
+## **Per-cell metadata**
+
+One row per cell, one column per AtoMx variable.
+
+123,709 cells × 66 columns.
+
+```{r}
+dim(obj[[]])
+```
+
+Every metadata column name.
+
+```{r}
+colnames(obj[[]])
+```
+
+First 6 cells (`obj[[]][1:10, ]` shows 10).
+
+```{r}
+head(obj[[]])
+```
+
+Type of each column (int, num, chr, logi).
+
+```{r}
+str(obj[[]])
+```
+
+Min / median / max per column (long, but run once).
+
+```{r}
+summary(obj[[]])
+```
+
+Spreadsheet view. Slow for 123k rows; RStudio only.
+
+```{r}
+#| eval: false
+View(obj[[]])
+```
+
+Cells per FOV (267 FOVs).
+
+```{r}
+table(obj$fov)
+```
+
+Cell area in µm².
+
+```{r}
+summary(obj$Area.um2)
+```
+
+# Structural validation
+
+**Does:** stops the run if an assay or metadata column the workflow needs is missing, or if AtoMx cell IDs disagree with Seurat's cell names. **Returns:** nothing if all is well; the number of FOVs (expect 267).
+
+```{r}
+#| label: validation
+required_assays <- c("RNA", "negprobes", "falsecode")
+missing_assays  <- setdiff(required_assays, Assays(obj))            
+if (length(missing_assays)) stop("Missing assay(s): ", paste(missing_assays, collapse = ", "))
+
+required_metadata <- c("cell_id", "fov", "x_slide_mm", "y_slide_mm", "Area.um2",
+                       "nCount_RNA", "nFeature_RNA", "nCount_negprobes", "nCount_falsecode")
+missing_metadata  <- setdiff(required_metadata, colnames(obj[[]]))  
+if (length(missing_metadata)) stop("Missing metadata column(s): ", paste(missing_metadata, collapse = ", "))
+
+stopifnot(!anyDuplicated(obj$cell_id))                          
+stopifnot(identical(Cells(obj), unname(obj$cell_id)))            
+stopifnot(identical(unname(obj$cell_id), unname(obj$cell_ID)))  
+uniqueN(obj$fov)                                                
+```
+
+# Count matrices and x/y coordinates
+
+## **Count matrices**
+
+**Reads in:** the `counts` layer of the three assays. **Does:** transposes features × cells → cells × features (the NanoString CosMx orientation). Negative probes target sequences absent from the human genome; false codes are barcodes assigned to no probe. Both measure background, not expression. **Returns:** `counts`, `negprobes_counts`, `falsecode_counts`.
+
+```{r}
+#| label: matrices
+counts           <- t(LayerData(obj, assay = "RNA",       layer = "counts"))  
+negprobes_counts <- t(LayerData(obj, assay = "negprobes", layer = "counts"))  
+falsecode_counts <- t(LayerData(obj, assay = "falsecode", layer = "counts"))  
+```
+
+Size of each matrix and its top-left corner ("." = zero in a sparse matrix).
+
+```{r}
+dim(counts);           counts[1:5, 1:5]
+```
+
+```{r}
+dim(negprobes_counts); negprobes_counts[1:5, 1:5]
+```
+
+```{r}
+dim(falsecode_counts); falsecode_counts[1:5, 1:5]
+```
+
+`dgCMatrix` = compressed sparse matrix.
+
+```{r}
+class(counts)
+```
+
+Fraction of zeros: why sparse storage is used.
+
+```{r}
+1 - nnzero(counts) / prod(dim(counts))
+```
+
+## **x/y coordinates**
+
+**Reads in:** `x_slide_mm`, `y_slide_mm`, AtoMx's whole-slide coordinates (already in mm). **Returns:** `xy` (cells × 2, row names = cell names).
+
+```{r}
+#| label: xy
+xy <- as.matrix(obj[[c("x_slide_mm", "y_slide_mm")]])  
+colnames(xy) <- c("x_mm", "y_mm")
+stopifnot(all(is.finite(xy)))                          
+```
+
+```{r}
+head(xy)
+```
+
+Slide extent in mm (y min ≈ −0.51 is valid).
+
+```{r}
+apply(xy, 2, range)
+```
+
+# Integrity checks
+
+**Does:** confirms every matrix lists the same cells in the same order as `obj`, and that summing each cell's counts reproduces the totals AtoMx recorded.
+
+```{r}
+#| label: integrity
+stopifnot(identical(rownames(counts),           Cells(obj)))
+stopifnot(identical(rownames(negprobes_counts), Cells(obj)))
+stopifnot(identical(rownames(falsecode_counts), Cells(obj)))
+stopifnot(identical(rownames(xy),               Cells(obj)))
+stopifnot(all(rowSums(counts)           == obj$nCount_RNA))        
+stopifnot(all(rowSums(negprobes_counts) == obj$nCount_negprobes))  
+stopifnot(all(rowSums(falsecode_counts) == obj$nCount_falsecode))  
+message("Integrity checks passed: identities and per-cell totals match.")
+```
+
+# Mean background per cell
+
+**Does:** divides each control SUM by the number of control probes → a per-probe MEAN, comparable across panels. **Returns:** new columns `obj$negmean`, `obj$falsecodemean`.
+
+```{r}
+#| label: background
+n_negprobes <- ncol(negprobes_counts)   
+n_falsecode <- ncol(falsecode_counts)   
+n_negprobes; n_falsecode                
+
+obj$negmean       <- obj$nCount_negprobes / n_negprobes   
+obj$falsecodemean <- obj$nCount_falsecode / n_falsecode
+```
+
+```{r}
+summary(obj$negmean)
+```
+
+```{r}
+summary(obj$falsecodemean)
+```
+
+# Spatial components
+
+**Reads in:** the FOV-class spatial object inside `obj`, plus the AtoMx FOV-positions flat file. **Returns:** `centroids_df`, `polygons_df`, `tx_df`, `fov_positions_flat`.
+
+```{r}
+#| label: fov-object
+img_name <- Images(obj)[1]   
+fov_obj  <- obj[[img_name]]  
+names(fov_obj)               
+```
+
+## **Centroids:** one centre point per cell
+
+```{r}
+#| label: centroids
+centroids_df <- GetTissueCoordinates(fov_obj, which = "centroids")   
+head(centroids_df)
+summary(centroids_df[, c("x", "y")])                                 
+```
+
+Are the Seurat centroids the same numbers as `x_slide_mm` / `y_slide_mm`? `TRUE` justifies using `xy` for everything below.
+
+```{r}
+isTRUE(all.equal(centroids_df$x, xy[centroids_df$cell, "x_mm"], check.attributes = FALSE)) &&
+  isTRUE(all.equal(centroids_df$y, xy[centroids_df$cell, "y_mm"], check.attributes = FALSE))
+```
+
+## **Polygons:** segmentation outline of each cell (one row per vertex)
+
+```{r}
+#| label: polygons
+polygons_df <- NULL
+if ("segmentation" %in% names(fov_obj)) {
+  polygons_df <- GetTissueCoordinates(fov_obj, which = "segmentation")  
+  print(head(polygons_df, 10))
+  print(nrow(polygons_df))                  
+  print(length(unique(polygons_df$cell)))   
+  print(mean(table(polygons_df$cell)))      
+}
+```
+
+## **Transcripts:** x, y of each detected RNA molecule
+
+The full table has hundreds of millions of rows, so only the chosen gene(s) are loaded.
+
+```{r}
+#| label: transcripts
+genes_to_show <- intersect("", rownames(obj))   
+tx_df <- NULL
+if ("molecules" %in% names(fov_obj)) {
+  tx_df <- GetTissueCoordinates(fov_obj[["molecules"]], features = genes_to_show)  # columns x, y, molecule
+  print(head(tx_df))
+  print(table(tx_df$molecule))              
+}
+```
+
+## **FOV positions** from the AtoMx flat file (cross-check only)
+
+```{r}
+#| label: fov-positions
+fovfile <- list.files(slide_dir, pattern = "fov_positions.*", full.names = TRUE)[1]
+fov_positions_flat <- NULL
+if (!is.na(fovfile)) {
+  fov_positions_flat <- fread(fovfile)
+  print(head(fov_positions_flat))           
+}
+```
+
+# Section labels
+
+**Does:** defines tissue sections from position only (no expression). DBSCAN chains cells \< 1 mm apart (`eps = 1`); `minPts = 1` assigns every cell, so none is noise. Cluster numbers are then mapped to tissue IDs. **Returns:** `obj$section_id`.
+
+::: callout-warning
+DBSCAN numbers clusters in the order it meets cells; it cannot know tissue IDs. **Confirm `section_name_mapping` against the plot and the AtoMx slide thumbnail.**
+:::
+
+```{r}
+#| label: sections
+#| fig-width: 8
+#| fig-height: 8
+if ("section_id" %in% colnames(obj[[]])) {
+  message("section_id already present - reused, no clustering run.")
+} else {
+  clust_raw <- dbscan(xy, eps = 1, minPts = 1)$cluster      
+  obj$section_id_placeholder <- paste0("section", clust_raw)
+  print(table(obj$section_id_placeholder))                  
+  if (length(unique(clust_raw)) != 6) warning("Expected 6 clusters - adjust eps.")
+
+  ## Cluster centres: where each cluster sits on the slide.
+  print(aggregate(cbind(x_slide_mm, y_slide_mm) ~ section_id_placeholder,
+                  data = obj[[c("x_slide_mm", "y_slide_mm", "section_id_placeholder")]], FUN = mean))
+
+  ## Plot to match clusters to the AtoMx slide thumbnail.
+  p_placeholder <- ggplot(obj[[c("x_slide_mm", "y_slide_mm", "section_id_placeholder")]],
+                          aes(x_slide_mm, y_slide_mm, colour = section_id_placeholder)) +
+    geom_point(size = 0.05, alpha = 0.3) + coord_fixed() + theme_minimal() +
+    guides(colour = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+    labs(title = "dbscan clusters - match to AtoMx thumbnail", x = "x (mm)", y = "y (mm)")
+  ggsave(file.path(dir_plots, "placeholder_overview_plot.png"), p_placeholder, width = 8, height = 8, dpi = 300)
+  print(p_placeholder)
+
+  ## >>> CONFIRM this mapping against the plot and the AtoMx thumbnail. <<<
+  section_name_mapping <- c(section1 = "AAA38", section2 = "AAA45", section3 = "AAA46",
+                            section4 = "AAA40", section5 = "AAA48", section6 = "AAA2")
+  stopifnot(all(unique(obj$section_id_placeholder) %in% names(section_name_mapping)))
+  obj$section_id <- unname(section_name_mapping[obj$section_id_placeholder])
+}
+```
+
+Cells per named section.
+
+```{r}
+table(obj$section_id)
+```
+
+# Tallies per FOV and per section
+
+**Does:** tallies existing AtoMx columns. Tissue area is the one value that is computed, because it belongs to a whole section. **Returns:** `fov_summary`, `cells_per_fov_per_section`, `section_summary`.
+
+```{r}
+#| label: md
+## md holds only the columns the summaries need, taken straight from obj.
+md <- as.data.table(obj[[c("cell_id", "section_id", "fov", "x_slide_mm", "y_slide_mm",
+                           "Area.um2", "nCount_RNA", "nFeature_RNA", "negmean", "falsecodemean")]])
+
+## Sanity check: an FOV should lie in only one section.
+fov_multi <- md[, .(n_sections = uniqueN(section_id)), by = fov][n_sections > 1]
+if (nrow(fov_multi) > 0) { warning("FOVs spanning >1 section:"); print(fov_multi) }
+```
+
+## **Per-FOV table**
+
+One row per FOV (`.N` = cells in that FOV).
+
+```{r}
+#| label: fov-summary
+fov_summary <- md[, .(
+  n_cells              = .N,
+  total_transcripts    = sum(nCount_RNA),
+  median_tx_per_cell   = median(nCount_RNA),
+  median_cell_area_um2 = median(Area.um2),
+  fov_x_min_mm = min(x_slide_mm), fov_x_max_mm = max(x_slide_mm),
+  fov_y_min_mm = min(y_slide_mm), fov_y_max_mm = max(y_slide_mm),
+  fov_x_centre_mm = mean(range(x_slide_mm)), fov_y_centre_mm = mean(range(y_slide_mm))
+), by = .(section_id, fov)][order(section_id, fov)]
+fov_summary
+```
+
+Cells per FOV, one column per section (0 = FOV not in that section).
+
+```{r}
+cells_per_fov_per_section <- dcast(fov_summary, fov ~ section_id, value.var = "n_cells", fill = 0)
+cells_per_fov_per_section
+```
+
+## **Tissue-section area**
+
+-   **Occupied-bin area:** a 50 µm grid; squares holding ≥ 1 cell centre × square area. Follows the true outline, including a ring-shaped aortic wall.
+-   **Convex-hull area:** the smallest convex polygon around all cells (shoelace formula). Overestimates rings because it includes the lumen.
+
+```{r}
+#| label: area-functions
+bin_mm <- 0.05
+occupied_area_mm2 <- function(x, y, b) nrow(unique(data.table(floor(x / b), floor(y / b)))) * b^2
+hull_area_mm2 <- function(x, y) {
+  h <- chull(x, y); xs <- x[h]; ys <- y[h]                       
+  0.5 * abs(sum(xs * c(ys[-1], ys[1]) - c(xs[-1], xs[1]) * ys))  
+}
+```
+
+## **Per-section table**
+
+```{r}
+#| label: section-summary
+section_summary <- md[, .(
+  n_fov                 = uniqueN(fov),
+  n_cells               = .N,
+  total_transcripts     = sum(nCount_RNA),
+  median_tx_per_cell    = median(nCount_RNA),
+  median_genes_per_cell = median(nFeature_RNA),
+  median_cell_area_um2  = median(Area.um2),
+  summed_cell_area_mm2  = sum(Area.um2) / 1e6,                     
+  tissue_area_bins_mm2  = occupied_area_mm2(x_slide_mm, y_slide_mm, bin_mm),
+  tissue_area_hull_mm2  = hull_area_mm2(x_slide_mm, y_slide_mm),
+  mean_negmean          = mean(negmean),
+  mean_falsecodemean    = mean(falsecodemean)
+), by = section_id][order(section_id)]
+section_summary
+```
+
+# Per-section objects
+
+**Does:** row subsets of the whole-slide objects (nothing recomputed). Each section's Seurat object is `subset(obj)`, which keeps assays and spatial data linked. Transcripts carry no cell label, so each is given the section of its nearest cell centre (an approximation). **Returns:** per-section lists, plus named copies such as `AAA2_metadata`, `AAA2_expression_matrix` and `AAA2_seurat`.
+
+```{r}
+#| label: per-section
+if (!is.null(tx_df) && nrow(tx_df) > 0) {
+  nn <- kNN(xy, k = 1, query = as.matrix(tx_df[, c("x", "y")]))$id[, 1]  
+  tx_df$section_id <- unname(obj$section_id)[nn]
+}
+
+section_names <- sort(unique(obj$section_id))
+metadata_by_section <- expression_by_section <- negprobes_by_section <- list()
+falsecode_by_section <- xy_by_section <- polygons_by_section <- list()
+transcripts_by_section <- seurat_by_section <- list()
+
+for (sec in section_names) {
+  cells_sec <- Cells(obj)[obj$section_id == sec]   
+  metadata_by_section[[sec]]   <- obj[[]][cells_sec, ]          
+  expression_by_section[[sec]] <- counts[cells_sec, ]
+  negprobes_by_section[[sec]]  <- negprobes_counts[cells_sec, ]
+  falsecode_by_section[[sec]]  <- falsecode_counts[cells_sec, ]
+  xy_by_section[[sec]]         <- xy[cells_sec, ]
+
+  assign(paste0(sec, "_metadata"),          metadata_by_section[[sec]],     envir = .GlobalEnv)
+  assign(paste0(sec, "_expression_matrix"), expression_by_section[[sec]],   envir = .GlobalEnv)
+  assign(paste0(sec, "_negprobes"),         negprobes_by_section[[sec]],    envir = .GlobalEnv)
+  assign(paste0(sec, "_falsecode"),         falsecode_by_section[[sec]],    envir = .GlobalEnv)
+  assign(paste0(sec, "_xy"),                xy_by_section[[sec]],           envir = .GlobalEnv)
+  assign(paste0(sec, "_fov_summary"),       fov_summary[section_id == sec], envir = .GlobalEnv)
+
+  if (!is.null(polygons_df)) {
+    polygons_by_section[[sec]] <- polygons_df[polygons_df$cell %in% cells_sec, ]
+    assign(paste0(sec, "_polygons"), polygons_by_section[[sec]], envir = .GlobalEnv)
+  }
+  if (!is.null(tx_df) && nrow(tx_df) > 0) {
+    transcripts_by_section[[sec]] <- tx_df[tx_df$section_id == sec, ]
+    assign(paste0(sec, "_transcripts"), transcripts_by_section[[sec]], envir = .GlobalEnv)
+  }
+
+  seurat_by_section[[sec]] <- tryCatch(subset(obj, cells = cells_sec),
+                                       error = function(e) { message(sec, ": subset failed - ", e$message); NULL })
+  assign(paste0(sec, "_seurat"), seurat_by_section[[sec]], envir = .GlobalEnv)
+
+  stopifnot(identical(rownames(expression_by_section[[sec]]), rownames(metadata_by_section[[sec]])))
+  message(sec, ": ", length(cells_sec), " cells, ", uniqueN(metadata_by_section[[sec]]$fov), " FOVs")
+}
+```
+
+Every per-section object just created.
+
+```{r}
+ls(pattern = "^AAA")
+```
+
+# Plots for visual verification
+
+**Does:** confirms the section labels and FOV layout visually against the slide. **Saves to:** `AAA/spatial_plots/`.
+
+## **Whole slide:** sections coloured and labelled at their centre
+
+```{r}
+#| label: plot-overview
+#| fig-width: 8
+#| fig-height: 8
+centroids_sec <- md[, .(x = mean(x_slide_mm), y = mean(y_slide_mm)), by = section_id]
+p_overview <- ggplot(md, aes(x_slide_mm, y_slide_mm, colour = section_id)) +
+  geom_point(size = 0.05, alpha = 0.3) +
+  geom_text(data = centroids_sec, aes(x, y, label = section_id), colour = "black", size = 5, fontface = "bold") +
+  coord_fixed() + theme_minimal() +
+  guides(colour = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+  labs(title = "AAA CosMx - 6 tissue sections", x = "x (mm)", y = "y (mm)")
+ggsave(file.path(dir_plots, "section_overview_plot.png"), p_overview, width = 8, height = 8, dpi = 300)
+print(p_overview)
+```
+
+## **Each section:** cells coloured by FOV, FOV numbers at FOV centres
+
+```{r}
+#| label: plot-fov
+#| fig-width: 7
+#| fig-height: 7
+for (sec in section_names) {
+  d <- md[section_id == sec]; fl <- fov_summary[section_id == sec]
+  p <- ggplot(d, aes(x_slide_mm, y_slide_mm, colour = factor(fov))) +
+    geom_point(size = 0.1, alpha = 0.5, show.legend = FALSE) +
+    geom_text(data = fl, aes(fov_x_centre_mm, fov_y_centre_mm, label = fov), colour = "black", size = 2.5) +
+    coord_fixed() + theme_minimal() +
+    labs(title = paste0(sec, " - ", nrow(d), " cells, ", nrow(fl), " FOVs"), x = "x (mm)", y = "y (mm)")
+  ggsave(file.path(dir_plots, paste0(sec, "_spatial_by_fov.png")), p, width = 7, height = 7, dpi = 300)
+  print(p)
+}
+```
+
+## **Cell polygons** of one FOV, filled by transcripts per cell
+
+`group = cell` draws each cell's vertices as one closed shape.
+
+```{r}
+#| label: plot-polygons
+#| fig-width: 7
+#| fig-height: 7
+if (!is.null(polygons_df)) {
+  example_fov <- fov_summary[section_id == section_names[1]]$fov[1]
+  poly_fov <- polygons_df[polygons_df$cell %in% md[fov == example_fov]$cell_id, ]
+  poly_fov$nCount_RNA <- obj[[]][poly_fov$cell, "nCount_RNA"]   # each vertex gets its cell's count
+  p_poly <- ggplot(poly_fov, aes(x, y, group = cell, fill = nCount_RNA)) +
+    geom_polygon(colour = "grey30", linewidth = 0.1) +
+    coord_fixed() + theme_minimal() + scale_fill_viridis_c() +
+    labs(title = paste0("Cell polygons - FOV ", example_fov, " (", section_names[1], ")"))
+  ggsave(file.path(dir_plots, paste0("polygons_FOV", example_fov, ".png")), p_poly, width = 7, height = 7, dpi = 300)
+  print(p_poly)
+}
+```
+
+## **Transcript locations** of the chosen genes
+
+```{r}
+#| label: plot-transcripts
+#| fig-width: 8
+#| fig-height: 8
+if (!is.null(tx_df) && nrow(tx_df) > 0) {
+  p_tx <- ggplot(tx_df, aes(x, y, colour = molecule)) +
+    geom_point(size = 0.01, alpha = 0.3) + coord_fixed() + theme_minimal() +
+    guides(colour = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+    labs(title = "Transcript locations", x = "x (mm)", y = "y (mm)")
+  ggsave(file.path(dir_plots, "transcripts_selected_genes.png"), p_tx, width = 8, height = 8, dpi = 300)
+  print(p_tx)
+}
+```
+
+# Save
+
+**Does:** saves everything so later steps reload it with `readRDS()` instead of re-running this page. **Saves to:** `AAA/` (whole slide) and `AAA/per_section/<section>/`.
+
+```{r}
+#| label: save
+saveRDS(counts,           file.path(output_dir, "counts_unfiltered.RDS"))
+saveRDS(negprobes_counts, file.path(output_dir, "negprobes_unfiltered.RDS"))
+saveRDS(falsecode_counts, file.path(output_dir, "falsecode_unfiltered.RDS"))
+saveRDS(obj[[]],          file.path(output_dir, "metadata_unfiltered.RDS"))   
+saveRDS(xy,               file.path(output_dir, "xy_unfiltered.RDS"))
+saveRDS(obj,              file.path(output_dir, "seurat_with_sections.RDS"))
+if (!is.null(polygons_df)) saveRDS(polygons_df, file.path(output_dir, "polygons_unfiltered.RDS"))
+fwrite(fov_summary,               file.path(output_dir, "fov_summary.csv"))
+fwrite(section_summary,           file.path(output_dir, "section_summary.csv"))
+fwrite(cells_per_fov_per_section, file.path(output_dir, "cells_per_fov_per_section.csv"))
+
+## Per-section files, one folder per section.
+for (sec in section_names) {
+  d <- file.path(dir_sections, sec); dir.create(d, showWarnings = FALSE)
+  saveRDS(metadata_by_section[[sec]],   file.path(d, paste0(sec, "_metadata.RDS")))
+  saveRDS(expression_by_section[[sec]], file.path(d, paste0(sec, "_expression_matrix.RDS")))
+  saveRDS(negprobes_by_section[[sec]],  file.path(d, paste0(sec, "_negprobes.RDS")))
+  saveRDS(falsecode_by_section[[sec]],  file.path(d, paste0(sec, "_falsecode.RDS")))
+  saveRDS(xy_by_section[[sec]],         file.path(d, paste0(sec, "_xy.RDS")))
+  fwrite(fov_summary[section_id == sec], file.path(d, paste0(sec, "_fov_summary.csv")))
+  if (!is.null(polygons_df))              saveRDS(polygons_by_section[[sec]],    file.path(d, paste0(sec, "_polygons.RDS")))
+  if (length(transcripts_by_section))     saveRDS(transcripts_by_section[[sec]], file.path(d, paste0(sec, "_transcripts.RDS")))
+  if (!is.null(seurat_by_section[[sec]])) saveRDS(seurat_by_section[[sec]],      file.path(d, paste0(sec, "_seurat.RDS")))
+}
+message("All outputs saved to ", output_dir)
+```
+
+# Explore your data
+
+Run one line at a time to get to know the data.
+
+::: {.callout-tip appearance="simple"}
+`View(...)` opens a spreadsheet tab in RStudio. Those chunks are set to `eval: false`, so they don't run when the page is rendered; run them by hand.
+:::
+
+## **Whole slide**
+
+All cells, all metadata.
+
+```{r}
+#| eval: false
+View(obj[[]])
+```
+
+One row per section: FOVs, cells, transcripts, areas, background.
+
+```{r}
+#| eval: false
+View(section_summary)
+```
+
+One row per FOV: cells, transcripts, position.
+
+```{r}
+#| eval: false
+View(fov_summary)
+```
+
+Cells per FOV, one column per section.
+
+```{r}
+#| eval: false
+View(cells_per_fov_per_section)
+```
+
+Corner of the whole-slide expression matrix.
+
+```{r}
+#| eval: false
+View(as.matrix(counts[1:50, 1:50]))
+```
+
+Coordinates, polygons and transcripts.
+
+```{r}
+head(xy)
+```
+
+```{r}
+head(polygons_df)
+```
+
+```{r}
+head(tx_df)
+```
+
+## **One section**
+
+Swap `AAA2` for `AAA38`, `AAA40`, `AAA45`, `AAA46` or `AAA48`.
+
+Metadata of this section.
+
+```{r}
+#| eval: false
+View(AAA2_metadata)
+```
+
+FOV table of this section.
+
+```{r}
+#| eval: false
+View(AAA2_fov_summary)
+```
+
+Cells × genes in this section.
+
+```{r}
+dim(AAA2_expression_matrix)
+```
+
+Corner of the expression matrix.
+
+```{r}
+#| eval: false
+View(as.matrix(AAA2_expression_matrix[1:50, 1:50]))
+```
+
+Negative-probe counts.
+
+```{r}
+#| eval: false
+View(as.matrix(AAA2_negprobes[1:50, ]))
+```
+
+False-code counts.
+
+```{r}
+#| eval: false
+View(as.matrix(AAA2_falsecode[1:50, ]))
+```
+
+Coordinates, polygons and transcripts of this section.
+
+```{r}
+head(AAA2_xy)
+```
+
+```{r}
+if (exists("AAA2_polygons")) head(AAA2_polygons)
+```
+
+```{r}
+if (exists("AAA2_transcripts")) head(AAA2_transcripts)
+```
+
+The Seurat object of this section.
+
+```{r}
+AAA2_seurat
+```
+
+## **Useful one-liners**
+
+Cells per FOV.
+
+```{r}
+table(AAA2_metadata$fov)
+```
+
+Transcripts per cell.
+
+```{r}
+summary(AAA2_metadata$nCount_RNA)
+```
+
+Cell areas (µm²).
+
+```{r}
+summary(AAA2_metadata$Area.um2)
+```
+
+Top 20 genes by total counts.
+
+```{r}
+sort(colSums(AAA2_expression_matrix), decreasing = TRUE)[1:20]
+```
