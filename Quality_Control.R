@@ -1,5 +1,23 @@
+## =============================================================================
+## QUALITY CONTROL - AAA CosMx (6 tissue sections)
+## =============================================================================
+## INPUTS: everything is read from the folder written by the load script
+##   (AAA_CosMx_load_and_inspect.qmd / Loading_and_subsetting.R):
+##     output_dir = /Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA
+##       metadata_unfiltered.RDS   = obj[[]]  (per-cell metadata, incl. section_id, negmean)
+##       counts_unfiltered.RDS     = cells x genes counts (RNA assay)
+##       negprobes_unfiltered.RDS  = cells x negative-probe counts
+##       xy_unfiltered.RDS         = cells x 2 slide coordinates (mm)
+##       seurat_with_sections.RDS  = the Seurat object (obj) with section_id
+##   In the Seurat workflow the per-cell table is obj[[]]. The load script saved
+##   exactly obj[[]] as metadata_unfiltered.RDS, so "metadata" below IS obj[[]]
+##   (same cells, same order, same columns). "script 02" in the comments below
+##   = the load script.
+## OUTPUTS: output_dir/QC/... (one folder per QC), as before.
+## Lines changed from the previous version are marked "## CHANGED".
+## =============================================================================
 
-WORKS 
+## WORKS
 ## =============================================================================
 ## 03_QC_low_counts_per_cell.R
 ## =============================================================================
@@ -22,10 +40,10 @@ WORKS
 ## =============================================================================
 suppressPackageStartupMessages(library(data.table))   # tables and grouped summaries
 
-output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: load-script output folder
 
-## Reuse metadata from script 02 if it is in the session; otherwise reload the saved copy.
-if (!exists("metadata")) metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))
+## Per-cell metadata saved by the load script (= obj[[]]).                         ## CHANGED
+metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))   ## CHANGED: always read the load script's obj[[]] (never a stale "metadata")
 stopifnot("section_id" %in% colnames(metadata))       # section labels from Chunk 9
 stopifnot(identical(rownames(metadata), metadata$cell_id))
 section_names <- sort(unique(metadata$section_id))    # AAA2 ... AAA48
@@ -265,11 +283,11 @@ list.files(dir_qc, recursive = TRUE, full.names = TRUE) # every file saved insid
 ## =============================================================================
 library(data.table)
 
-## If starting a fresh session, reload metadata and the low-count flags:
-# output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
-# metadata   <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))
-# flag_all   <- readRDS(file.path(output_dir, "QC", "QC_low_counts_per_cell_all_cells",  "flag_low_counts_all_cells.RDS"))
-# flag_sec   <- readRDS(file.path(output_dir, "QC", "QC_low_counts_per_tissue_section", "flag_low_counts_per_section.RDS"))
+## Metadata from the load script; low-count flags from script 03 (read from disk if not in the session)   ## CHANGED
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED
+metadata   <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))                                                     ## CHANGED
+if (!exists("flag_all")) flag_all <- readRDS(file.path(output_dir, "QC", "QC_low_counts_per_cell_all_cells",  "flag_low_counts_all_cells.RDS"))   ## CHANGED
+if (!exists("flag_sec")) flag_sec <- readRDS(file.path(output_dir, "QC", "QC_low_counts_per_tissue_section", "flag_low_counts_per_section.RDS"))  ## CHANGED
 
 section_names <- sort(unique(metadata$section_id))   # the 6 sections
 
@@ -518,13 +536,7 @@ area_removed_section[, .N, by = section_id]   # area-flagged cells per section
 
 ## =============================================================================
 ## 05_1_QC_FOV.R
-## =============================================================================
-
-
-
-
-
-
+## ============================================================================
 ## =============================================================================
 ## 05_1_QC_FOV.R (Used)   (alternative to 05_QC_FOV.R - run ONE of the two, not both)
 ## =============================================================================
@@ -566,12 +578,13 @@ library(ggplot2)          # bar plot (vignette 2)
 library(ComplexHeatmap)   # bias heatmap (vignette 2)
 library(circlize)         # colorRamp2() for the heatmap colours (vignette 2)
 
-output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: load-script output folder
 
-## If starting a fresh session, reload the unfiltered objects saved by script 02:
-# counts   <- readRDS(file.path(output_dir, "counts_unfiltered.RDS"))
-# xy       <- readRDS(file.path(output_dir, "xy_unfiltered.RDS"))
-# metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))
+## Unfiltered objects saved by the load script. counts and xy are reused from the
+## session only if they hold exactly the same cells; otherwise read from disk.          ## CHANGED
+metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))                                                  ## CHANGED
+if (!exists("counts") || !identical(rownames(counts), metadata$cell_id)) counts <- readRDS(file.path(output_dir, "counts_unfiltered.RDS"))   ## CHANGED
+if (!exists("xy")     || !identical(rownames(xy),     metadata$cell_id)) xy     <- readRDS(file.path(output_dir, "xy_unfiltered.RDS"))       ## CHANGED
 
 ## FOV QC runs on all cells (before any cells are removed).
 stopifnot(identical(rownames(counts), metadata$cell_id))
@@ -948,8 +961,8 @@ library(ggplot2)      # plots
 library(ggExtra)      # ggMarginal(): density curves on the joint plot (vignette)
 library(scales)       # log10 axis labels (vignette)
 
-output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
-# metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))   # fresh session only
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: load-script output folder
+metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))   ## CHANGED: always read the load script's obj[[]]
 
 section_names <- sort(unique(metadata$section_id))
 n_sd <- 2.5                                  # vignette: 2.5 SD around the mean in log10 space
@@ -1189,8 +1202,8 @@ library(ggplot2)      # plots
 library(patchwork)    # inset_element(): pie chart inside the histogram (vignette)
 library(scales)
 
-output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
-# metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))   # fresh session only
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: load-script output folder
+metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))   ## CHANGED: always read the load script's obj[[]]
 
 stopifnot("SplitRatioToLocal" %in% colnames(metadata))   # AtoMx column used by the vignette
 stopifnot(!anyNA(metadata$SplitRatioToLocal))
@@ -1472,11 +1485,13 @@ library(Matrix)     # sparse weight matrix
 library(dbscan)     # kNN() nearest neighbours
 library(ggplot2)
 
-output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
-## Fresh session only:
-# metadata         <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))
-# counts           <- readRDS(file.path(output_dir, "counts_unfiltered.RDS"))
-# negprobes_counts <- readRDS(file.path(output_dir, "negprobes_unfiltered.RDS"))
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: load-script output folder
+## Load-script outputs (counts matrices reused from the session only if they hold the same cells)   ## CHANGED
+metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))                                                     ## CHANGED
+if (!exists("counts")           || !identical(rownames(counts), metadata$cell_id))
+  counts <- readRDS(file.path(output_dir, "counts_unfiltered.RDS"))                                                        ## CHANGED
+if (!exists("negprobes_counts") || !identical(rownames(negprobes_counts), metadata$cell_id))
+  negprobes_counts <- readRDS(file.path(output_dir, "negprobes_unfiltered.RDS"))                                           ## CHANGED
 
 section_names <- sort(unique(metadata$section_id))
 
@@ -1703,12 +1718,6 @@ message("Outputs saved to ", dir_sbr)
 ## =============================================================================
 ## 09_QC_Proseg.R
 ## =============================================================================
-
-
-
-## =============================================================================
-## 09_QC_Proseg.R
-## =============================================================================
 ## PURPOSE
 ##   Segmentation QC with ProSeg, run SEPARATELY on each of the 6 tissue
 ##   sections (six ProSeg runs). Continues from scripts 02-08.
@@ -1747,7 +1756,7 @@ suppressPackageStartupMessages({
   library(ggplot2)
 })
 
-output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: load-script output folder
 slide_dir  <- "/Users/maryamuhabilausman/Desktop/AAA_CosMx_Analysis/Downloaded_data/flatFiles/AC20260629_AAA3"
 
 ## Section files written by the earlier version of this script are reused
@@ -2104,17 +2113,19 @@ message("ProSeg results saved to ", dir_res)
 ##devtools::install_github("https://github.com/Nanostring-Biostats/InSituCor")
 ##renv::install("Nanostring-Biostats/InSituCor")   # installs from GitHub into your renv project library
 
-remotes::install_github("Nanostring-Biostats/InSituCor", upgrade = "never")
+if (!requireNamespace("InSituCor", quietly = TRUE))                                  ## CHANGED: install once, not on every run
+  remotes::install_github("Nanostring-Biostats/InSituCor", upgrade = "never")
 library(scales)   # viridis_pal() (vignette)
 library(data.table)
 library(InSituCor)
 
 
-output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: load-script output folder
 
-## Load metadata and xy from disk if they are not already in this R session
-if (!exists("metadata")) metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))
-if (!exists("xy"))       xy       <- readRDS(file.path(output_dir, "xy_unfiltered.RDS"))
+## Load-script outputs (xy reused from the session only if it holds the same cells)        ## CHANGED
+metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))                                                ## CHANGED
+if (!exists("xy") || !identical(rownames(xy), metadata$cell_id)) xy <- readRDS(file.path(output_dir, "xy_unfiltered.RDS"))   ## CHANGED
+section_names <- sort(unique(metadata$section_id))   ## CHANGED: was not defined in this part (needed by CHUNK 56)
 
 stopifnot(identical(rownames(xy), metadata$cell_id),   # same cells, same order
           "section_id" %in% colnames(metadata))        # section labels were saved
@@ -2311,7 +2322,7 @@ message("Descriptive plots saved to ", dir_desc)
 ##     QC                     PART A (per section)                    PART B (all cells)
 ##     03 Low counts          flag_low_counts_per_section.RDS         flag_low_counts_all_cells.RDS
 ##     04 Large area          Area > 30,000 px (fixed threshold: identical in A and B)
-##     05 FOV QC              fovqcresult.RDS (run once on the whole slide: identical in A and B)
+##     05 FOV QC              05_1_QC_FOV/fovqcresult.RDS (run per section; same flags in A and B)   ## CHANGED
 ##     06 nCount/nFeature     flag_ncount_nfeature_per_section.RDS    flag_ncount_nfeature_all_cells.RDS
 ##     07 FOV border          flag_FOV_border_cells.RDS (fixed threshold: identical in A and B)
 ##     08 Low SBR             flag_low_SBR.RDS (fixed threshold: identical in A and B)
@@ -2329,7 +2340,7 @@ message("Descriptive plots saved to ", dir_desc)
 library(data.table)
 library(UpSetR)       # upset(), fromList(), fromExpression()
 
-output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: load-script output folder
 qc_dir     <- file.path(output_dir, "QC")
 
 metadata <- readRDS(file.path(output_dir, "metadata_unfiltered.RDS"))
@@ -2360,7 +2371,7 @@ rd <- function(...) {                                           # read one saved
   stopifnot(identical(names(f), metadata$cell_id))
   unname(f)
 }
-fovqcresult <- readRDS(file.path(qc_dir, "FOV", "fovqcresult.RDS"))
+fovqcresult <- readRDS(file.path(qc_dir, "05_1_QC_FOV", "fovqcresult.RDS"))   ## CHANGED: 05_1 (per-section FOV QC) saves here; QC/FOV is the old 05 script
 length(fovqcresult$flaggedfovs)                                 # flagged FOVs
 
 area_flag   <- metadata$Area > 30000
@@ -2686,7 +2697,7 @@ suppressPackageStartupMessages({
   library(Seurat); library(SeuratObject); library(data.table)
 })
 
-output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: load-script output folder
 seurat_in  <- file.path(output_dir, "seurat_with_sections.RDS")                     # script 02 (read only)
 qc_dir_A   <- file.path(output_dir, "QC", "independent_cells_per_tissue_section_03_to_09_QCs")
 flag_table <- file.path(qc_dir_A, "cells", "02_all_cells_with_QCs_removed_by.csv")     # script 10: TRUE/FALSE per QC per cell
@@ -2879,7 +2890,7 @@ message("Cells: ", fmt(ncol(obj)), " before, ", fmt(sum(removed)), " removed, ",
 library(data.table)
 library(UpSetR)       # upset(), fromList(), fromExpression()
 
-output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: load-script output folder
 qc_dir     <- file.path(output_dir, "QC")
 qc_dir_A   <- file.path(qc_dir, "independent_cells_per_tissue_section_03_to_09_QCs")   # script 10, Part A
 flag_table <- file.path(qc_dir_A, "cells", "02_all_cells_with_QCs_removed_by.csv")     # TRUE/FALSE per QC per cell
@@ -3176,25 +3187,3 @@ for (sec in c(section_names, "All sections")) {
   r <- tx_summary[section_id == sec]; message("  ", sec, ": ", r$removed_label, " (", r$pct_transcripts_removed, "%)")
 }
 message("\nSaved to ", dir_C)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

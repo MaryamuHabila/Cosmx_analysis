@@ -1,6 +1,6 @@
 ## =============================================================================
 ## 12b_Seurat_functions_PCA_UMAP_Leiden.R
-## =============================================================================
+## ============================================================================
 ## PURPOSE
 ##   The SAME analysis as 12_Normalisation_PCA_UMAP_Leiden.R - same steps, same
 ##   parameters, same tables and plots - but each step uses the SEURAT function
@@ -21,6 +21,8 @@
 ##   STEP C UMAP of that graph     uwot::optimize_graph_layout        Seurat::RunUMAP(nn.name = STEP A kNN,
 ##                                                                    umap.method = "uwot") - uwot rebuilds the
 ##                                                                    same graph from the same kNN, then lays it out
+##                                                                    (repulsion.strength = umap_repulsion, CHUNK 1:
+##                                                                    spreads clusters apart in the plot only)
 ##   STEP D Leiden on that graph   igraph::cluster_leiden             Seurat::FindClusters(graph.name = STEP B graph,
 ##                                                                    algorithm = 4) - never on UMAP coordinates
 ##   Harmony (7)                   harmony::RunHarmony(PC matrix)     harmony::RunHarmony(Seurat object) - same call
@@ -35,10 +37,12 @@
 ##   - Leiden: Seurat runs it through leidenbase, script 12 through igraph.
 ##   So clusters/UMAP are near-identical to script 12, not bit-identical.
 ##
-## OUTPUT: <script 12 folder>/seurat_functions_used/PC<n>_NN<k>/
+## INPUT: the QC-filtered object from script 11 (QC_filtered_objects/<QC choice>/),
+##   chosen in CHUNK 1 (default: the one saved most recently).
+## OUTPUT: <output_dir>/Clustering_PCA_UMAP_Leiden_Markers/<QC choice>/PC<n>_NN<k>/
 ##   00_shared/ , 01_PRIMARY_batchawarePCA/ , 02_SENSITIVITY_batchawarePCA_Harmony/ ,
 ##   03_PRIMARY_vs_SENSITIVITY/  - same file names as script 12 inside each.
-##   Script 12's own results are never overwritten.
+##   A different QC choice or PC/NN setting writes a new folder; nothing is overwritten.
 ##
 ## Script 13 (side-by-side UMAPs) and FindAllMarkers are NOT part of script 12;
 ## they are in 13b_Seurat_UMAP_side_by_side_and_FindAllMarkers.R, run after this.
@@ -60,6 +64,7 @@ if (length(missing_pkgs) > 0) {
        "                          subdir = '_code/scPearsonPCA', ref = 'Main')")
 }
 ## functions this script depends on - stop now rather than fail halfway
+## leidenbase (Seurat's Leiden engine for FindClusters(algorithm = 4)) is on CRAN: install.packages("leidenbase")
 if (utils::packageVersion("Seurat") < "5.1.0") {                 # FindClusters(cluster.name), Leiden via leidenbase
   stop("Seurat >= 5.1.0 needed. install.packages('Seurat')")
 }
@@ -84,9 +89,25 @@ library(scPearsonPCA) # batch-aware Pearson-residual PCA (vignette)
 ## =============================================================================
 ## CHUNK 1: paths + parameters (same values as script 12)
 ## =============================================================================
-output_dir <- "/Users/maryamuhabilausman/Desktop/Analysis_AAA_29th_Sept_Seurat_Results"
-seurat_in  <- file.path(output_dir, "seurat_QC_filtered_per_section_03_to_09.RDS")   # script 11 (read only)
-input_tag  <- sub("\\.RDS$", "", basename(seurat_in))    # folder name follows the input object
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: same folder as the load script and QC
+
+## >>>>> WHICH QC-FILTERED OBJECT (from script 11) <<<<<                                       ## CHANGED
+##   NULL           = the object script 11 saved most recently (always the latest choice)
+##   c("03", ...)   = a specific choice, written exactly as qcs_to_remove in script 11
+qcs_to_remove <- NULL
+dir_qcf <- file.path(output_dir, "QC_filtered_objects")                    # script 11: one folder per QC choice
+if (is.null(qcs_to_remove)) {
+  cand <- list.files(dir_qcf, pattern = "^seurat_QC_filtered_removed_QC.*\\.RDS$",
+                     recursive = TRUE, full.names = TRUE)                  # every filtered object saved by script 11
+  stopifnot("no QC-filtered object found - run script 11 first" = length(cand) > 0)
+  seurat_in <- cand[which.max(file.mtime(cand))]                           # newest one
+} else {
+  qc_tag_in <- paste0("QC", paste(sort(unique(qcs_to_remove)), collapse = "_"))   # same naming as script 11
+  seurat_in <- file.path(dir_qcf, qc_tag_in, paste0("seurat_QC_filtered_removed_", qc_tag_in, ".RDS"))
+}
+qc_tag <- sub("^seurat_QC_filtered_removed_(.*)\\.RDS$", "\\1", basename(seurat_in))  # e.g. "QC03_04_05_06_07_08_09"
+message("Input (QC-filtered object): ", seurat_in)
+input_tag  <- sub("\\.RDS$", "", basename(seurat_in))    # file-name tag follows the input object
 
 batch_col           <- "sample_id"    # the 6 AAA tissue sections (AAA2 ... AAA48)
 n_hvgs              <- 2000           # vignette: 2000 for a 6k panel
@@ -94,10 +115,14 @@ n_pcs               <- 20             # vignette: sc.pp.neighbors(n_pcs = 40)   
 n_neighbors         <- 250            # vignette: sc.pp.neighbors(n_neighbors = 15), incl. the cell itself  <- change here
 rerun_pca           <- FALSE          # FALSE = reuse saved HVGs + PCA; TRUE = recompute
 
-dir_main    <- file.path(output_dir, "12_Normalisation_PCA_UMAP_Leiden", input_tag)   # script 12 folder
-dir_shared12 <- file.path(dir_main, "00_shared_HVGs_and_batch_aware_Pearson_PCA")    # script 12 HVGs + PCA (read only)
-run_tag     <- paste0("PC", n_pcs, "_NN", n_neighbors)                                # e.g. PC20_NN250
-dir_seu     <- file.path(dir_main, "seurat_functions_used", run_tag)                  # all 12b outputs here
+dir_main    <- file.path(output_dir, "Clustering_PCA_UMAP_Leiden_Markers", qc_tag)   ## CHANGED: one folder per QC choice
+umap_repulsion <- 3                 # UMAP repulsion.strength (Seurat/uwot default 1). Higher = clusters pushed further
+                                      # apart IN THE UMAP PLOT ONLY (Leiden clusters unchanged). Try 2-5.   <- change here
+## HVGs + PCA do not depend on the UMAP setting: reuse them from the PC/NN folder without "_rep" if already computed
+dir_shared12 <- file.path(dir_main, paste0("PC", n_pcs, "_NN", n_neighbors), "00_shared")
+run_tag     <- paste0("PC", n_pcs, "_NN", n_neighbors,
+                      if (umap_repulsion != 1) paste0("_rep", umap_repulsion))       # e.g. PC20_NN250, or PC20_NN250_rep3
+dir_seu     <- file.path(dir_main, run_tag)                                           ## CHANGED: all 12b + 13b outputs here
 dir_shared  <- file.path(dir_seu, "00_shared")
 dir_primary <- file.path(dir_seu, "01_PRIMARY_batchawarePCA")
 dir_sens    <- file.path(dir_seu, "02_SENSITIVITY_batchawarePCA_Harmony")
@@ -122,12 +147,12 @@ params <- data.table(
   parameter = c("input_metadata", "input_counts", "batch_variable", "n_HVGs", "HVG_method",
                 "PCA", "PCA_scale.max", "PCA_do.scale", "PCA_do.center", "totalcounts",
                 "n_PCs_for_neighbours", "n_neighbors_incl_self", "neighbour_metric", "kNN_method",
-                "graph", "UMAP", "UMAP_min_dist", "UMAP_spread", "UMAP_init",
+                "graph", "UMAP", "UMAP_min_dist", "UMAP_spread", "UMAP_repulsion_strength", "UMAP_init",
                 "clustering", "Leiden_objective", "Leiden_resolution", "Leiden_n_iterations",
                 "Harmony (sensitivity only)", "seed",
                 "Leiden_resolution_sweep", "sweep_UMAP_max_cells_per_panel (plot only)",
                 "sweep_tree_min_in_prop (plot only)"),
-  value = c(basename(seurat_in), "RNA counts layer of the input Seurat object",
+  value = c(seurat_in, "RNA counts layer of the input Seurat object",   ## CHANGED: full path of the QC-filtered input
             batch_col, n_hvgs, "Seurat::FindVariableFeatures (vst)",
             "scPearsonPCA::sparse_quasipoisson_pca_seurat_batch (batch-aware Pearson residuals)",
             10, TRUE, TRUE, "per-cell sum over all genes (= nCount_RNA)",
@@ -135,7 +160,7 @@ params <- data.table(
             paste0("Seurat::FindNeighbors(nn.method = 'annoy', annoy.metric = 'cosine', n.trees = ", annoy_n_trees, ")"),
             "uwot::similarity_graph on the kNN (UMAP fuzzy connectivities, as sc.pp.neighbors), as Seurat Graph",
             "Seurat::RunUMAP(nn.name = kNN, umap.method = 'uwot') - layout of that SAME graph",
-            umap_min_dist, umap_spread, "spectral",
+            umap_min_dist, umap_spread, umap_repulsion, "spectral",
             "Seurat::FindClusters(algorithm = 4, Leiden) on that SAME graph (never on UMAP coordinates)",
             "modularity (RBConfiguration)", leiden_resolution, leiden_n_iterations,
             paste0("harmony::RunHarmony (Seurat object) on all batch-aware PCs, group.by.vars = ", batch_col), seed,
@@ -150,7 +175,8 @@ stopifnot("input Seurat object not found - run script 11 first" = file.exists(se
 obj <- readRDS(seurat_in)
 obj
 
-stopifnot("cell_id column must match the object's cells" = identical(obj$cell_id, colnames(obj)),
+## obj$cell_id comes back as a NAMED vector, so names are dropped before comparing
+stopifnot("cell_id column must match the object's cells" = identical(unname(obj$cell_id), colnames(obj)),
           all(c(batch_col, "x_slide_mm", "y_slide_mm", "fov") %in% colnames(obj[[]])))
 
 counts_t <- LayerData(obj, assay = "RNA", layer = "counts")   # genes x cells (as the vignette uses)
@@ -501,7 +527,8 @@ run_branch_seurat <- function(obj, reduction, prefix, branch_dir, branch_name, e
   ## lays it out (spectral init, min_dist, spread as script 12)
   message("STEP C: UMAP layout of the neighbour graph (RunUMAP)...")
   obj <- RunUMAP(obj, nn.name = nn_name, umap.method = "uwot", min.dist = umap_min_dist,
-                 spread = umap_spread, seed.use = seed, reduction.name = umap_name,
+                 spread = umap_spread, repulsion.strength = umap_repulsion,      # repulsion: layout only, clusters unchanged
+                 seed.use = seed, reduction.name = umap_name,
                  reduction.key = paste0("UMAP", toupper(substr(prefix, 1, 1)), "_"))   # UMAPP_ / UMAPH_
   umap_xy <- Embeddings(obj, umap_name)
   colnames(umap_xy) <- c("UMAP_1", "UMAP_2")
@@ -747,3 +774,176 @@ message("               _summary.tiff, _UMAP_panels.tiff, _cluster_tree.tiff (+ 
 message("  03_comparison: ARI = ", round(ari, 4), ", crosstab + section mixing")
 message("  parameters_used_", run_tag, ".csv + sessionInfo.txt for the methods section")
 message(strrep("=", 78))
+
+
+
+
+
+
+
+
+
+
+
+## =============================================================================
+## 13b_Seurat_UMAP_side_by_side_and_FindAllMarkers.R
+## =============================================================================
+## PURPOSE
+##   Runs AFTER 12b_Seurat_functions_PCA_UMAP_Leiden.R and uses its saved object
+##   (same QC choice as 12b, set in CHUNK 1; default: the newest QC-filtered object).
+##   Nothing is recomputed (no PCA, neighbours, UMAP or clustering).
+##   PART A = script 13 with Seurat plot functions (DimPlot, FeaturePlot):
+##     Leiden (main resolution) beside nCount_RNA, and beside tissue section,
+##     for PRIMARY and SENSITIVITY, same sub-folders and file names as script 13.
+##   PART B = FindAllMarkers for the Leiden clusters (main resolution).
+##   Your CellTypist chunk can be run after PART B unchanged.
+## Run chunk by chunk (Cmd+Enter).
+## =============================================================================
+
+
+## =============================================================================
+## CHUNK 1: packages + settings (must match 12b CHUNK 1)
+## =============================================================================
+library(data.table)   # tables
+library(ggplot2)      # extra layers on Seurat plots
+library(patchwork)    # two plots side by side ( | )
+library(scales)       # comma labels on the counts legend
+library(Seurat)       # DimPlot, FeaturePlot, NormalizeData, FindAllMarkers
+library(openxlsx)     # write.xlsx(): one Excel sheet per cluster
+
+output_dir <- "/Users/maryamuhabilausman/Desktop/Cosmx_analysis_M/AAA"   ## CHANGED: same folder as the load script and QC
+
+## >>>>> WHICH QC-FILTERED OBJECT (from script 11) <<<<<                                       ## CHANGED
+##   NULL           = the object script 11 saved most recently (always the latest choice)
+##   c("03", ...)   = a specific choice, written exactly as qcs_to_remove in script 11
+qcs_to_remove <- NULL
+dir_qcf <- file.path(output_dir, "QC_filtered_objects")                    # script 11: one folder per QC choice
+if (is.null(qcs_to_remove)) {
+  cand <- list.files(dir_qcf, pattern = "^seurat_QC_filtered_removed_QC.*\\.RDS$",
+                     recursive = TRUE, full.names = TRUE)                  # every filtered object saved by script 11
+  stopifnot("no QC-filtered object found - run script 11 first" = length(cand) > 0)
+  seurat_in <- cand[which.max(file.mtime(cand))]                           # newest one
+} else {
+  qc_tag_in <- paste0("QC", paste(sort(unique(qcs_to_remove)), collapse = "_"))   # same naming as script 11
+  seurat_in <- file.path(dir_qcf, qc_tag_in, paste0("seurat_QC_filtered_removed_", qc_tag_in, ".RDS"))
+}
+qc_tag <- sub("^seurat_QC_filtered_removed_(.*)\\.RDS$", "\\1", basename(seurat_in))  # e.g. "QC03_04_05_06_07_08_09"
+message("Input (QC-filtered object): ", seurat_in)
+input_tag  <- sub("\\.RDS$", "", basename(seurat_in))    ## CHANGED: same input as 12b
+batch_col  <- "sample_id"
+n_pcs       <- 20     # as 12b
+n_neighbors <- 250    # as 12b
+leiden_resolution <- 1                                   # must be in 12b's resolution_sweep
+seed    <- 42
+dpi_out <- 300
+
+umap_repulsion <- 3    # must match 12b (CHUNK 1)
+run_tag     <- paste0("PC", n_pcs, "_NN", n_neighbors,
+                      if (umap_repulsion != 1) paste0("_rep", umap_repulsion))   # "PC20_NN250" (as 12b)
+plot_tag    <- paste0(run_tag, "_res", leiden_resolution)              # "PC20_NN250_res1" (file names)
+dir_main    <- file.path(output_dir, "Clustering_PCA_UMAP_Leiden_Markers", qc_tag)   ## CHANGED: as 12b
+dir_seu     <- file.path(dir_main, run_tag)                                           ## CHANGED: 12b output folder
+dir_primary <- file.path(dir_seu, "01_PRIMARY_batchawarePCA")
+dir_sens    <- file.path(dir_seu, "02_SENSITIVITY_batchawarePCA_Harmony")
+seurat_out  <- file.path(dir_seu, paste0("seurat_", input_tag, "_SeuratFunctions_", run_tag, ".RDS"))
+stopifnot("Run 12b first (Seurat object not found)" = file.exists(seurat_out))
+
+obj <- readRDS(seurat_out)                               # reductions + Leiden columns from 12b
+
+## colours: Leiden palette as script 12; tissue colours as script 13
+distinct_palette <- c(
+  "#E6194B", "#3CB44B", "#4363D8", "#F58231", "#911EB4", "#42D4F4", "#F032E6",
+  "#9A6324", "#469990", "#BFEF45", "#800000", "#FFE119", "#000075", "#808000",
+  "#FF8FB1", "#A9A9A9", "#005300", "#009FFF", "#C77CFF", "#FF6F61", "#00FFBE",
+  "#D4A017", "#7F7FFF", "#8B008B", "#2F4F4F", "#E9967A", "#556B2F", "#FF1493",
+  "#20B2AA", "#B8860B", "#6A5ACD", "#CD853F", "#4B0082", "#00CED1", "#8FBC8F",
+  "#A0522D")
+cluster_colours <- function(lv) {
+  if (length(lv) <= length(distinct_palette)) return(setNames(distinct_palette[seq_along(lv)], lv))
+  stopifnot("install.packages('Polychrome') for > 36 clusters" = requireNamespace("Polychrome", quietly = TRUE))
+  set.seed(seed)
+  setNames(unname(Polychrome::createPalette(length(lv), seedcolors = distinct_palette, range = c(25, 80))), lv)
+}
+tissue_cols <- c(AAA2 = "#2CA02C", AAA38 = "#1F4EDB", AAA40 = "#E31A1C",
+                 AAA45 = "#FF8C00", AAA46 = "#8E44AD", AAA48 = "#E6B800")
+save_tiff <- function(p, path, w, h) {
+  ggsave(path, p, width = w, height = h, dpi = dpi_out, device = "tiff", compression = "lzw", bg = "white")
+  message("Saved: ", path)
+}
+
+## one entry per analysis: UMAP reduction, cluster-column prefix, folder, label
+branches <- list(
+  list(umap = "umap_primary", prefix = "primary", dir = dir_primary, label = "Batch-aware Pearson PCA (PRIMARY)"),
+  list(umap = "umap_harmony", prefix = "harmony", dir = dir_sens,    label = "Batch-aware Pearson PCA + Harmony (SENSITIVITY)"))
+
+
+## =============================================================================
+## PART A - CHUNK 2: script 13 plots with Seurat functions
+## =============================================================================
+sec <- obj[[batch_col]][, 1]
+stopifnot("section names differ from tissue_cols" = setequal(names(tissue_cols), unique(sec)))
+n_sec <- table(sec)[names(tissue_cols)]                                 # cells per section (legend)
+tissue_labels <- setNames(paste0(names(tissue_cols), " (", format(as.integer(n_sec), big.mark = ","), " cells)"),
+                          names(tissue_cols))
+set.seed(seed); shuffled <- sample(colnames(obj))                       # random plotting order
+
+for (b in branches) {
+  message("\n==== ", b$label, " ====")
+  main_col <- paste0(b$prefix, "_leiden_res_", leiden_resolution)       # e.g. "primary_leiden_res_1"
+  stopifnot("resolution not in 12b's sweep" = main_col %in% colnames(obj[[]]))
+  
+  ## check (as script 13): nCount_RNA equals the total counts 12b used
+  cells12b <- fread(file.path(b$dir, "cells_UMAP_and_Leiden_clusters.csv"), select = c("cell_id", "totalcounts"))
+  stopifnot("nCount_RNA differs from 12b totals" =
+              all(obj$nCount_RNA == cells12b$totalcounts[match(colnames(obj), cells12b$cell_id)]))
+  
+  dir_counts <- file.path(b$dir, "UMAP_leiden_nCount_RNA")              # output sub-folders (as script 13)
+  dir_tissue <- file.path(b$dir, "UMAP_leiden_color_cells_by_tissue")
+  dir.create(dir_counts, showWarnings = FALSE); dir.create(dir_tissue, showWarnings = FALSE)
+  sub_txt <- paste0(b$label, ", ", n_pcs, " PCs, ", n_neighbors, " neighbours")
+  cl <- obj[[main_col]][, 1]                                            # Leiden cluster of each cell
+  
+  ## 1. Leiden clusters
+  p_leiden <- DimPlot(obj, reduction = b$umap, group.by = main_col, cols = cluster_colours(levels(cl)),
+                      label = TRUE, label.box = TRUE, label.size = 3.5, shuffle = TRUE, seed = seed,
+                      pt.size = 0.05, alpha = 0.3, raster = FALSE) +
+    coord_fixed() + theme_bw(base_size = 13) +
+    guides(colour = guide_legend(override.aes = list(size = 4, alpha = 1), ncol = 2)) +
+    labs(title = paste0("UMAP - Leiden clusters (resolution ", leiden_resolution, ", ", nlevels(cl), " clusters)"),
+         subtitle = sub_txt, colour = "Leiden\ncluster", x = "UMAP_1", y = "UMAP_2")
+  
+  ## 2. total RNA counts per cell; log10 colour scale, legend in real counts
+  p_counts <- FeaturePlot(obj, features = "nCount_RNA", reduction = b$umap, cells = shuffled,
+                          pt.size = 0.05, alpha = 0.3, raster = FALSE) +
+    scale_colour_viridis_c(option = "B", trans = "log10", labels = label_comma()) +
+    coord_fixed() + theme_bw(base_size = 13) +
+    guides(colour = guide_colourbar(barheight = unit(8, "cm"))) +
+    labs(title = "UMAP - total RNA counts per cell (nCount_RNA)",
+         subtitle = paste0(sub_txt, "; median ", format(median(obj$nCount_RNA), big.mark = ","), " counts per cell"),
+         colour = "Total RNA counts\nper cell\n(nCount_RNA,\nlog10 colour scale)", x = "UMAP_1", y = "UMAP_2")
+  
+  ## 3. tissue section of each cell
+  p_tissue <- DimPlot(obj, reduction = b$umap, group.by = batch_col, shuffle = TRUE, seed = seed,
+                      pt.size = 0.05, alpha = 0.3, raster = FALSE) +
+    scale_colour_manual(values = tissue_cols, labels = tissue_labels) +
+    coord_fixed() + theme_bw(base_size = 13) +
+    guides(colour = guide_legend(override.aes = list(size = 5, alpha = 1))) +
+    labs(title = "UMAP - cells coloured by tissue section", subtitle = sub_txt, colour = "Tissue section",
+         x = "UMAP_1", y = "UMAP_2")
+  
+  ## folder UMAP_leiden_nCount_RNA: 1, 2, and 1 + 2 side by side
+  save_tiff(p_leiden, file.path(dir_counts, paste0("UMAP_Leiden_", plot_tag, ".tiff")), 11, 9)
+  save_tiff(p_counts, file.path(dir_counts, paste0("UMAP_nCount_RNA_", plot_tag, ".tiff")), 11, 9)
+  save_tiff((p_leiden | p_counts) +
+              plot_annotation(title = paste0("Leiden clusters vs total RNA counts - ", b$label, " (", plot_tag, ")"),
+                              theme = theme(plot.title = element_text(face = "bold", size = 16))),
+            file.path(dir_counts, paste0("UMAP_Leiden_and_nCount_RNA_side_by_side_", plot_tag, ".tiff")), 22, 10)
+  
+  ## folder UMAP_leiden_color_cells_by_tissue: 1, 3, and 1 + 3 side by side
+  save_tiff(p_leiden, file.path(dir_tissue, paste0("UMAP_Leiden_", plot_tag, ".tiff")), 11, 9)
+  save_tiff(p_tissue, file.path(dir_tissue, paste0("UMAP_by_tissue_section_", plot_tag, ".tiff")), 11, 9)
+  save_tiff((p_leiden | p_tissue) +
+              plot_annotation(title = paste0("Leiden clusters vs tissue section - ", b$label, " (", plot_tag, ")"),
+                              theme = theme(plot.title = element_text(face = "bold", size = 16))),
+            file.path(dir_tissue, paste0("UMAP_Leiden_and_tissue_section_side_by_side_", plot_tag, ".tiff")), 22, 10)
+}
