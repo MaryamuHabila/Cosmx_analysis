@@ -2707,8 +2707,11 @@ flag_csv   <- file.path(qc_dir_A, "cells", "01_removed_cells_summary_per_section
 ##   "03" Low counts        "04" Large area        "05" FOV QC
 ##   "06" nCount/nFeature   "07" FOV border        "08" Low SBR
 ##   "09" ProSeg low purity
-qcs_to_remove <- c("03", "04", "05", "07")        # e.g. later: c("03", "04", "05", "09"); all: c("03","04","05","06","07","08","09")
-
+qcs_to_remove <- c("03", "04", "05", "06", "07", "08", "09") 
+##qcs_to_remove <- c("03", "04", "06", "07", "08", "09")  # e.g. later: c("03", "04", "05", "09"); all: c("03","04","05","06","07","08","09")
+##qcs_to_remove <- c("03", "04", "06", "07", "08")  # e.g. later: c("03", "04", "05", "09"); all: c("03","04","05","06","07","08","09")
+##qcs_to_remove <- c("03", "04", "05", "07")
+##qcs_to_remove <- c("03", "04", "05", "06", "07", "08")
 qc_columns <- c(`03` = "03_Low_counts", `04` = "04_Large_area", `05` = "05_FOV_QC",
                 `06` = "06_nCount_nFeature", `07` = "07_FOV_border", `08` = "08_Low_SBR",
                 `09` = "09_ProSeg_low_purity")             # column names in script 10's per-cell table
@@ -2899,8 +2902,11 @@ flag_table <- file.path(qc_dir_A, "cells", "02_all_cells_with_QCs_removed_by.csv
 ##   "03" Low counts        "04" Large area        "05" FOV QC
 ##   "06" nCount/nFeature   "07" FOV border        "08" Low SBR
 ##   "09" ProSeg low purity
-qcs_to_remove <- c("03", "04", "05", "07")
-
+##qcs_to_remove <- c("03", "04", "06", "07", "08", "09")  
+qcs_to_remove <- c("03", "04", "05", "06", "07", "08", "09")  # e.g. later: c("03", "04", "05", "09"); all: c("03","04","05","06","07","08","09")
+##qcs_to_remove <- c("03", "04", "05", "06", "07", "08", "09")
+## qcs_to_remove <- c("03", "04", "05", "07")
+##qcs_to_remove <- c("03", "04", "05", "06", "07", "08")
 qc_columns <- c(`03` = "03_Low_counts", `04` = "04_Large_area", `05` = "05_FOV_QC",
                 `06` = "06_nCount_nFeature", `07` = "07_FOV_border", `08` = "08_Low_SBR",
                 `09` = "09_ProSeg_low_purity")                       # column names in script 10's per-cell table
